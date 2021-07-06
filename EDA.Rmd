@@ -1,0 +1,193 @@
+---
+title: "EDA pt 2"
+author: "Dane Turnbull"
+date: "6/19/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table); library(dplyr); library(tidyr) # data manipulation
+library(ggplot2)
+library(stringr)
+library(plotly)
+library(parallel)
+```
+
+
+```{r}
+set.seed(1234)
+sample_wiki <- train_1 %>% # we use the full sample now
+  filter(!(grepl('www.mediawiki.org',Page))) %>%
+  sample_frac(0.1) %>%
+  gather(Date, Visit, -Page) %>% data.table
+```
+
+```{r}
+count_miss <- sapply(sample_wiki, function(x) data.table(sum(is.na(x))/nrow(sample_wiki),
+                                          sum(is.na(x)),
+                                          sum(x == 0,na.rm = T)))
+rownames(count_miss) = c('NA %','count NA','count zero')
+count_miss
+```
+```{r}
+sum(sapply(sample_wiki$Page[1:100000], function(x) str_count(x,pattern = "_")) == 3)
+```
+```{r}
+name = mclapply(str_split(sample_wiki$Page,pattern = "_"),
+                  function(x) head(x,length(x)-3))
+    name = mclapply(name, function(x) paste(x,collapse = ' '))
+    
+    page_split <- mclapply(str_split(sample_wiki$Page,pattern = "_"), 
+                         function(x) tail(x,3)) 
+    add <- data.table(Project= unlist(mclapply(page_split, function(x) x[1])),
+                      Access= unlist(mclapply(page_split, function(x) x[2])),
+                      Agent= unlist(mclapply(page_split, function(x) x[3])),
+                      Name = unlist(name))
+    
+    sample_wiki <- cbind(sample_wiki, add)
+    head(sample_wiki)[,-1]
+```
+```{r}
+table(sample_wiki[is.na(Visit), Project])/table(sample_wiki[, Project])
+```
+```{r}
+sample_wiki <- replace_na(sample_wiki,list(Visit = 0))
+```
+
+```{r}
+sample_wiki <- sample_wiki %>% 
+  mutate(Date = as.Date(Date,format="%Y-%m-%d"),
+         Year = year(Date),
+         Month = month(Date),
+         Visit_m = Visit/1000000)
+```
+
+```{r}
+#Visualize the sample data, by Date only
+p_base <- sample_wiki %>%
+  group_by(Date) %>%
+  summarise(Visit_m = sum(Visit_m)) %>%
+  ggplot(aes(Date, Visit_m)) +
+  geom_line(color = 'cadetblue3') + 
+  theme_classic(base_size = 12,base_family = 'mono') + 
+  ylab('Visit in Millions') + ggtitle('Wikipedia Traffic (Daily)')
+
+ggplotly(p_base)
+```
+
+
+```{r}
+# calculate average monthly visits
+p_month <- sample_wiki %>%
+  mutate(year_month = format(Date, "%Y-%m")) %>%
+  group_by(year_month, Project) %>%
+  summarise(Visit = mean(Visit)) %>%
+  ggplot(aes(year_month, Visit)) + 
+  geom_bar(stat = 'identity', aes(fill = Project)) + 
+  theme_classic(base_size = 12,base_family = 'mono') + 
+  ylab('Number of Visits') + xlab('Year - Month') + ggtitle('Average Monthly Wikipedia Traffic')
+ggplotly(p_month)
+```
+
+```{r}
+# Visualize the sample data, by Project
+p_proj <- sample_wiki %>%
+  group_by(Date,Project) %>%
+  summarise(Visit_m = sum(Visit_m)) %>%
+  ggplot(aes(Date, Visit_m)) + 
+  geom_line(aes(color = Project), size = 0.3) + 
+  # facet_grid(~Project,scales = 'free_y',shrink = F) + 
+  theme_classic(base_size = 12,base_family = 'mono') +
+  theme(legend.position = 'top') +
+  ylab('Visit in Millions')
+ggplotly(p_proj)
+```
+
+```{r}
+# Visualize the sample data, by Project
+p_proj <- sample_wiki %>%
+  group_by(Date,Project) %>%
+  summarise(Visit_m = sum(Visit_m)) %>%
+  ggplot(aes(Date, Visit_m)) + 
+  geom_line(aes(color = Project), size = 0.3) + 
+  # facet_grid(~Project,scales = 'free_y',shrink = F) + 
+  theme_classic(base_size = 12,base_family = 'mono') +
+  theme(legend.position = 'top') +
+  ylab('Visit in Millions')
+ggplotly(p_proj)
+```
+
+```{r}
+# Visualize by Access
+p_access <- sample_wiki %>%
+  group_by(Date,Access) %>%
+  summarise(Visit_m = sum(Visit_m)) %>%
+  ggplot(aes(Date, Visit_m)) + 
+  geom_line(aes(color = Access)) + 
+  theme_classic(base_size = 12,base_family = 'mono') + ylab('Visit in Millions')
+ggplotly(p_access)
+```
+```{r}
+p_agent <- sample_wiki %>%
+  group_by(Date,Agent) %>%
+  summarise(Visit_m = sum(Visit_m)) %>%
+  ggplot(aes(Date, Visit_m)) + 
+  geom_line(aes(color = Agent))+ 
+  # facet_wrap(~Agent, scales = 'free_y') + 
+  theme_classic(base_size = 12,base_family = 'mono') + ylab('Visit in Millions')
+ggplotly(p_agent)
+```
+
+
+```{r}
+# summarize by Project, pick the top 1 of all time
+top_1_proj <- sample_wiki %>%
+  group_by(Project, Name) %>%
+  summarise(Visit = sum(Visit)) %>%
+  top_n(1, Visit) %>% data.table
+top_1_proj
+```
+
+```{r}
+wc <- sample_wiki %>% 
+  group_by(Project, Year, Name) %>%
+  summarise(Visit = sum(Visit)) %>% data.table
+
+wc_en <- wc[grepl('en',Project) & !grepl(Name,pattern = c('Special:'))]
+wc_en_15 <- wc_en[Year == 2015]
+wc_en_16 <- wc_en[Year == 2016]
+```
+
+```{r}
+top_10_en_15 <- top_n(wc_en_15, 10,Visit) %>% select(Name)
+# time trend by the top phrases
+    sample_wiki %>% 
+      filter(Name %in% top_10_en_15$Name,
+             Year == 2015) %>%
+      ggplot() + 
+      geom_bar(aes(x= Date,y = Visit_m), stat = 'identity', fill = 'blue',alpha = 0.7) +
+      facet_wrap(~Name, scales = 'fixed',nrow = 5) +
+      theme_classic(base_size = 12,base_family = 'mono') + ylab('Visit in Millions') +
+      ggtitle('Top 10 Visited Pages in 2015')
+```
+
+
+```{r}
+top_10_en_16 <- top_n(wc_en_16, 10,Visit) %>% select(Name)
+# time trend by the top phrases
+   sample_wiki %>% 
+      filter(Name %in% top_10_en_16$Name,
+             Year == 2016) %>%
+      ggplot() + 
+      geom_bar(aes(x= Date,y = Visit_m), fill = 'red', alpha = 0.7, stat = 'identity') +
+      facet_wrap(~Name, scales = 'free_y', nrow = 5) +
+      theme_classic(base_size = 12,base_family = 'mono') + ylab('Visit in Millions') +
+      ggtitle('Top 10 Visited Pages in 2016')
+```
+
+
+

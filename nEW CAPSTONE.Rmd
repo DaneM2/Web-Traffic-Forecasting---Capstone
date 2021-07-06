@@ -1,0 +1,763 @@
+---
+title: "Test"
+author: "Dane Turnbull"
+date: "6/21/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+library('ggplot2') # visualization
+library('ggthemes') # visualization
+library('scales') # visualization
+library('grid') # visualisation
+library('gridExtra') # visualisation
+library('corrplot') # visualisation
+library('ggrepel') # visualisation
+library('RColorBrewer') # visualisation
+library('data.table') # data manipulation
+library('dplyr') # data manipulation
+library('readr') # data input
+library('tibble') # data wrangling
+library('tidyr') # data wrangling
+library('lazyeval') # data wrangling
+library('broom') # data wrangling
+library('stringr') # string manipulation
+library('purrr') # string manipulation
+library('forcats') # factor manipulation
+library('lubridate') # date and time
+library('forecast') # time series analysis
+library('prophet') # time series analysis
+library('gtsummary') # time series analysis
+```
+
+```{r}
+train_1 <- read_csv("~/Bellevue College/Spring Quarter 2021/DA485/Web traffic forecasting data/train_1.csv/train_1.csv")
+```
+
+```{r}
+train_2 <- read_csv("~/Bellevue College/Spring Quarter 2021/DA485/Web traffic forecasting data/train_2.csv/train_2.csv")
+key_1 <- read_csv("~/Bellevue College/Spring Quarter 2021/DA485/Web traffic forecasting data/key_1.csv/key_1.csv")
+```
+
+```{r}
+#viewing the size and volume
+c(ncol(train_1),nrow(train_1))
+```
+```{r}
+head(train_1)
+```
+
+```{r}
+train_1 %>% colnames() %>% head(10)
+```
+
+```{r}
+train_1 %>% select(Page) %>% head(10)
+```
+```{r}
+glimpse(key_1)
+```
+```{r}
+#Calculating the percentage of missing values
+sum(is.na(train_1))
+sum(is.na(train_1))/(ncol(train_1)*nrow(train_1))
+```
+```{r}
+#Data Transformation using tidyverse: https://r4ds.had.co.nz/transform.html https://m-clark.github.io/data-processing-and-visualization/tidyverse.html#generating-new-data
+
+##The goal is to divide train_1 into two parts, the article information and the dates(timeseries)
+
+tdates <- train_1 %>% select(-Page)
+
+#https://stringr.tidyverse.org/reference/str_detect.html
+#Seperate page from dates
+foo <- train_1 %>% select(Page) %>% rownames_to_column()
+mediawiki <- foo %>% filter(str_detect(Page, "mediawiki"))
+wikimedia <- foo %>% filter(str_detect(Page, "wikimedia"))
+wikipedia <- foo %>% filter(str_detect(Page, "wikipedia")) %>% 
+  filter(!str_detect(Page, "wikimedia")) %>%
+  filter(!str_detect(Page, "mediawiki"))
+
+#Seperate the article data into the 3 platforms pedia, media, mediawiki
+wikipedia <- wikipedia %>%
+  separate(Page, into = c("df", "bar"), sep = ".wikipedia.org_") %>%
+  separate(df, into = c("article", "locale"), sep = -3) %>%
+  separate(bar, into = c("access", "agent"), sep = "_") %>%
+  mutate(locale = str_sub(locale,2,3))
+
+wikimedia <- wikimedia %>%
+  separate(Page, into = c("article", "bar"), sep = "_commons.wikimedia.org_") %>%
+  separate(bar, into = c("access", "agent"), sep = "_") %>%
+  add_column(locale = "wikmed")
+
+mediawiki <- mediawiki %>%
+  separate(Page, into = c("article", "bar"), sep = "_www.mediawiki.org_") %>%
+  separate(bar, into = c("access", "agent"), sep = "_") %>%
+  add_column(locale = "medwik")
+
+tpages <- wikipedia %>%
+  full_join(wikimedia, by = c("rowname", "article", "locale", "access", "agent")) %>%
+  full_join(mediawiki, by = c("rowname", "article", "locale", "access", "agent"))
+
+sample_n(tpages, size = 5)
+
+```
+
+```{r}
+tpages %>% filter(str_detect(article, "The_Beatle")) %>%
+  filter(access == "all-access") %>%
+  filter(agent == "all-agents")
+```
+
+
+
+```{r}
+#Custom function to extract timeseries 
+extract_ts <- function(rownr){
+  tdates %>%
+    rownames_to_column %>% 
+    filter(rowname == as.character(rownr)) %>% 
+    gather(dates, value, -rowname) %>% 
+    spread(rowname, value) %>%
+    mutate(dates = ymd(dates)) %>% 
+    rename(views = as.character(rownr))
+}
+
+extract_ts_nrm <- function(rownr){
+  tdates %>%
+    rownames_to_column %>% 
+    filter(rowname == as.character(rownr)) %>% 
+    gather(dates, value, -rowname) %>% 
+    spread(rowname, value) %>%
+    mutate(dates = ymd(dates)) %>% 
+    rename(views = as.character(rownr)) %>% 
+    mutate(views = views/mean(views))
+}
+```
+
+```{r}
+head(tdates)
+```
+
+```{r}
+plot_rownr <- function(rownr){
+  art <- tpages %>% filter(rowname == rownr) %>% .$article
+  loc <- tpages %>% filter(rowname == rownr) %>% .$locale
+  acc <- tpages %>% filter(rowname == rownr) %>% .$access
+  extract_ts(rownr) %>%
+    ggplot(aes(dates, views)) +
+    geom_line() +
+    geom_smooth(method = "loess", color = "blue", span = 1/5) +
+    labs(title = str_c(art, " - ", loc, " - ", acc))
+}
+
+plot_rownr_log <- function(rownr){
+  art <- tpages %>% filter(rowname == rownr) %>% .$article
+  loc <- tpages %>% filter(rowname == rownr) %>% .$locale
+  acc <- tpages %>% filter(rowname == rownr) %>% .$access
+  extract_ts_nrm(rownr) %>%
+    ggplot(aes(dates, views)) +
+    geom_line() +
+    geom_smooth(method = "loess", color = "blue", span = 1/5) +
+    labs(title = str_c(art, " - ", loc, " - ", acc)) +
+    scale_y_log10() + labs(y = "log views")
+}
+
+plot_rownr_zoom <- function(rownr, start, end){
+  art <- tpages %>% filter(rowname == rownr) %>% .$article
+  loc <- tpages %>% filter(rowname == rownr) %>% .$locale
+  acc <- tpages %>% filter(rowname == rownr) %>% .$access
+  extract_ts(rownr) %>%
+    filter(dates > ymd(start) & dates <= ymd(end)) %>%
+    ggplot(aes(dates, views)) +
+    geom_line() +
+    #geom_smooth(method = "loess", color = "blue", span = 1/5) +
+    #coord_cartesian(xlim = ymd(c(start,end))) +  
+    labs(title = str_c(art, " - ", loc, " - ", acc))
+}
+```
+
+```{r}
+plot_rownr(70772)
+```
+```{r}
+plot_names <- function(art, acc, ag){
+
+  pick <- tpages %>% filter(str_detect(article, art)) %>%
+    filter(access == acc) %>%
+    filter(agent == ag)
+  pick_nr <- pick %>% .$rowname
+  pick_loc <- pick %>% .$locale
+
+  tdat <- extract_ts(pick_nr[1]) %>%
+    mutate(loc = pick_loc[1])
+
+  for (i in seq(2,length(pick))){
+    foo <- extract_ts(pick_nr[i]) %>%
+    mutate(loc = pick_loc[i])
+    tdat <- bind_rows(tdat,foo)
+  }
+
+  plt <- tdat %>%
+    ggplot(aes(dates, views, color = loc)) +
+    geom_line() + 
+    labs(title = str_c(art, "  -  ", acc, "  -  ", ag))
+
+  print(plt)
+}
+
+plot_names_nrm <- function(art, acc, ag){
+
+  pick <- tpages %>% filter(str_detect(article, art)) %>%
+    filter(access == acc) %>%
+    filter(agent == ag)
+  pick_nr <- pick %>% .$rowname
+  pick_loc <- pick %>% .$locale
+
+  tdat <- extract_ts_nrm(pick_nr[1]) %>%
+    mutate(loc = pick_loc[1])
+
+  for (i in seq(2,length(pick))){
+    foo <- extract_ts_nrm(pick_nr[i]) %>%
+    mutate(loc = pick_loc[i])
+    tdat <- bind_rows(tdat,foo)
+  }
+
+  plt <- tdat %>%
+    ggplot(aes(dates, views, color = loc)) +
+    geom_line() + 
+    labs(title = str_c(art, "  -  ", acc, "  -  ", ag)) +
+    scale_y_log10() + labs(y = "log views")
+
+  print(plt)
+}
+```
+
+```{r}
+plot_names("YouTube", "all-access", "all-agents")
+```
+```{r}
+#Multiplot function from: https://stackoverflow.com/questions/24387376/r-error-could-not-find-function-multiplot-using-cookbook-example
+
+multiplot <- function(..., plotlist = NULL, file, cols = 1, layout = NULL) {
+  require(grid)
+
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  if (is.null(layout)) {
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                 ncol = cols, nrow = ceiling(numPlots/cols))
+}
+
+if (numPlots == 1) {
+print(plots[[1]])
+
+} else {
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+for (i in 1:numPlots) {
+  matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+  print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                  layout.pos.col = matchidx$col))
+ }
+}
+ }
+```
+
+```{r}
+library(ggplot2)
+p1 <- tpages %>% 
+  ggplot(aes(agent)) + geom_bar(fill = "steelblue1")
+p2 <- tpages %>% 
+  ggplot(aes(access)) + geom_bar(fill = "steelblue1")
+p3 <- tpages %>% 
+  ggplot(aes(locale, fill = locale)) + geom_bar() + theme(legend.position = "none")
+
+layout <- matrix(c(1,2,3,3),2,2,byrow=TRUE)
+
+multiplot(p1, p2, p3, layout=layout)
+```
+```{r}
+params_ts1 <- function(rownr){
+  foo <- tdates %>%
+    filter_((interp(~x == row_number(), .values = list(x = rownr)))) %>%
+    rownames_to_column %>% 
+    gather(dates, value, -rowname) %>% 
+    spread(rowname, value) %>%
+    mutate(dates = ymd(dates),
+          views = as.integer(`1`))
+
+  slope <- ifelse(is.na(mean(foo$views)),0,summary(lm(views ~ dates, data = foo))$coef[2])
+  slope_err <- ifelse(is.na(mean(foo$views)),0,summary(lm(views ~ dates, data = foo))$coef[4])
+
+  bar <- tibble(
+    rowname = rownr,
+    min_view = min(foo$views),
+    max_view = max(foo$views),
+    mean_view = mean(foo$views),
+    med_view = median(foo$views),
+    sd_view = sd(foo$views),
+    slope = slope/slope_err
+  )
+
+  return(bar)
+}
+```
+
+```{r}
+set.seed(4321)
+foo <- sample_n(tpages, 5500) #5500
+#foo <- tpages
+rows <- foo$rowname
+pcols <- c("rowname", "min_view", "max_view", "mean_view", "med_view", "sd_view", "slope")
+
+params <- params_ts1(rows[1])
+```
+
+```{r}
+for (i in seq(2,nrow(foo))){
+  params <- full_join(params, params_ts1(rows[i]), by = pcols)
+}
+
+params <- params %>%
+  filter(!is.na(mean_view)) %>%
+  mutate(rowname = as.character(rowname))
+```
+
+```{r}
+p1 <- params %>% 
+  ggplot(aes(mean_view)) + geom_histogram(fill = "darkmagenta", bins = 50) + scale_x_log10()
+p2 <- params %>% 
+  ggplot(aes(max_view)) + geom_histogram(fill = "darkmagenta", bins = 50) + scale_x_log10()
+p3 <- params %>% 
+  ggplot(aes(med_view)) + geom_histogram(fill = "darkmagenta", bins = 50) + scale_x_log10()
+p4 <- params %>% 
+  ggplot(aes(slope)) + geom_histogram(fill = "darkmagenta", bins = 30) + 
+  scale_x_continuous(limits = c(-25,25))
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p4, layout=layout)
+```
+
+```{r}
+par_page <- left_join(params,tpages, by = "rowname")
+p1 <- par_page %>% 
+  ggplot(aes(mean_view, fill = locale)) +
+  geom_density(position = "stack") +
+  scale_x_log10(limits = c(1,1e4)) +
+  theme(legend.position = "none")
+
+p2 <- par_page %>% 
+  ggplot(aes(max_view, fill = locale)) +
+  geom_density(position = "stack") +
+  scale_x_log10(limits = c(10,1e6)) +
+  theme(legend.position = "none")
+
+p3 <- par_page %>%
+  ggplot(aes(sd_view, fill = locale)) +
+  geom_density(position = "stack") +
+  scale_x_log10(limits = c(1,1e5)) +
+  theme(legend.position = "none")
+
+p4 <- par_page %>% 
+  ggplot(aes(slope, fill = locale)) +
+  geom_density(position = "stack") + 
+  scale_x_continuous(limits = c(-10,10))
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+
+```{r}
+params %>%
+  ggplot(aes(max_view-mean_view, mean_view)) +
+  geom_bin2d(bins = c(50,50)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "maximum views above mean", y = "mean views")
+```
+```{r}
+limx <- c(max(params$max_view)/35, max(params$max_view))
+limy <- c(max(params$mean_view)/35, max(params$mean_view))
+par_page %>%
+  ggplot(aes(max_view-mean_view, mean_view)) +
+  geom_point(size = 2, color = "red") +
+  scale_x_log10(limits = limx) +
+  scale_y_log10(limits = limy) +
+  labs(x = "maximum views above mean", y = "mean views") +
+  geom_label_repel(aes(label = str_c(article, " (",rowname,")")), alpha = 0.5)
+```
+
+```{r}
+params %>%
+  ggplot(aes(slope, mean_view)) +
+  geom_point(color = "red", alpha = 0.1) +
+  scale_y_log10() +
+  labs(x = "linear slope relative to slope error", y = "mean views")
+```
+```{r}
+params %>% arrange(desc(slope)) %>% head(5) %>% select(rowname, slope, everything())
+```
+
+```{r}
+p1 <- plot_rownr(91728)
+p2 <- plot_rownr(55587)
+p3 <- plot_rownr(108341)
+p4 <- plot_rownr(70772)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+
+```{r}
+plot_names_nrm("Twenty_One_Pilots", "all-access", "all-agents")
+```
+
+```{r}
+params %>% arrange(slope) %>% head(5) %>% select(rowname, slope, everything())
+```
+
+```{r}
+p1 <- plot_rownr(95856)
+p2 <- plot_rownr(74115)
+p3 <- plot_rownr(8388)
+p4 <- plot_rownr(103659)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+
+```{r}
+params %>% arrange(desc(sd_view/mean_view)) %>% head(5) %>% 
+  select(rowname, sd_view, mean_view, max_view, everything())
+
+p1 <- plot_rownr(9775)
+p2 <- plot_rownr(38574)
+p3 <- plot_rownr(103124)
+p4 <- plot_rownr(99323)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+```{r}
+params %>% arrange(desc(sd_view/mean_view)) %>% head(5) %>% 
+  select(rowname, sd_view, mean_view, max_view, everything())
+
+p1 <- plot_rownr(10032)
+p2 <- plot_rownr(38812)
+p3 <- plot_rownr(86905)
+p4 <- plot_rownr(102521)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+```{r}
+params %>% arrange(desc(max_view - mean_view)) %>% 
+  head(5) %>% select(rowname, max_view, mean_view, everything())
+```
+
+```{r}
+params %>% arrange(desc(mean_view)) %>% 
+  head(5) %>% select(rowname, max_view, mean_view, everything())
+```
+
+```{r}
+p1 <- plot_rownr(38574)
+p2 <- plot_rownr(9775)
+p3 <- plot_rownr(74115)
+p4 <- plot_rownr(139120)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+```{r}
+p1 <- plot_rownr_log(92206)
+p2 <- plot_rownr(116197)
+p3 <- plot_rownr_log(10404)
+p4 <- plot_rownr_log(33645)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+```{r}
+p1 <- plot_rownr_zoom(10404, "2016-10-01", "2016-12-01")
+p2 <- plot_rownr_zoom(9775, "2015-09-01", "2015-11-01")
+p3 <- plot_rownr_zoom(139120, "2016-10-01", "2016-12-01")
+p4 <- plot_rownr_zoom(110658, "2016-07-01", "2016-09-01")
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+```{r}
+rownr <- 10404
+start <- "2016-10-01"
+end <- "2016-12-01"
+foo1 <- extract_ts(rownr) %>%
+  filter(dates > ymd(start) & dates < ymd(end)) %>%
+  mutate(dates = wday(dates, label = TRUE)) %>%
+  group_by(dates) %>%
+  summarise(wday_views = mean(views)) %>%
+  mutate(wday_views = wday_views/mean(wday_views)) %>%
+  mutate(id = factor(rownr))
+
+rownr <- 9775
+start <- "2015-09-01"
+end <- "2015-11-01"
+foo2 <- extract_ts(rownr) %>%
+  filter(dates > ymd(start) & dates < ymd(end)) %>%
+  mutate(dates = wday(dates, label = TRUE)) %>%
+  group_by(dates) %>%
+  summarise(wday_views = mean(views)) %>%
+  mutate(wday_views = wday_views/mean(wday_views)) %>%
+  mutate(id = factor(rownr))
+
+rownr <- 139120
+start <- "2016-10-01"
+end <- "2016-12-01"
+foo3 <- extract_ts(rownr) %>%
+  filter(dates > ymd(start) & dates < ymd(end)) %>%
+  mutate(dates = wday(dates, label = TRUE)) %>%
+  group_by(dates) %>%
+  summarise(wday_views = mean(views)) %>%
+  mutate(wday_views = wday_views/mean(wday_views)) %>%
+  mutate(id = factor(rownr))
+
+rownr <- 110658
+start <- "2016-07-01"
+end <- "2016-09-01"
+foo4 <- extract_ts(rownr) %>%
+  filter(dates > ymd(start) & dates < ymd(end)) %>%
+  mutate(dates = wday(dates, label = TRUE)) %>%
+  group_by(dates) %>%
+  summarise(wday_views = mean(views)) %>%
+  mutate(wday_views = wday_views/mean(wday_views)) %>%
+  mutate(id = factor(rownr))
+
+foo <- bind_rows(foo1,foo2,foo3,foo4)
+
+foo %>%
+  ggplot(aes(dates, wday_views, color = id)) +
+  geom_jitter(size = 4, width = 0.1) +
+  labs(x = "Day of the week", y = "Relative average views")
+```
+```{r}
+plot_pds_rownr_zoom <- function(rownr,start,end){
+  art <- tpages %>% filter(rowname == rownr) %>% .$article
+  loc <- tpages %>% filter(rowname == rownr) %>% .$locale
+  acc <- tpages %>% filter(rowname == rownr) %>% .$access
+
+  pds <- extract_ts(rownr) %>%
+    filter(dates > ymd(start) & dates < ymd(end)) %>%
+    select(-dates) %>%
+    ts() %>%
+
+  spectrum(plot = FALSE)
+
+  p <- tibble(period = 1./pds$freq,power = pds$spec**2) %>%
+    ggplot(aes(period, power)) +
+    geom_vline(xintercept = 7, colour="blue") +
+    geom_line(color = "black", tsize = 2) +
+    scale_x_log10() +
+    labs(title = str_c("PDS of ", art, "-", loc, "-", acc))
+
+  return(p)
+}
+
+```
+
+```{r}
+p1 <- plot_pds_rownr_zoom(10404, "2016-10-01", "2016-12-01")
+p2 <- plot_pds_rownr_zoom(9775, "2015-09-01", "2015-11-01")
+p3 <- plot_pds_rownr_zoom(139120, "2016-10-01", "2016-12-01")
+p4 <- plot_pds_rownr_zoom(110658, "2016-07-01", "2016-09-01")
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+```{r}
+plot_auto_arima_rownr <- function(rownr){
+
+  
+
+  pageviews <- extract_ts(rownr) %>%
+
+    rownames_to_column() %>%
+
+    mutate(rowname = as.integer(rowname))
+
+  pred_len <- 45
+
+  pred_range <- c(nrow(pageviews)-pred_len+1, nrow(pageviews))
+
+  pre_views <- pageviews %>% head(nrow(pageviews)-pred_len)
+
+  post_views <- pageviews %>% tail(pred_len)
+
+
+
+  arima.fit <- auto.arima(tsclean(ts(pre_views$views, frequency = 7)),
+
+                          d = 1, D = 1, stepwise = FALSE, approximation = FALSE)
+
+  fc_views <- arima.fit %>% forecast(h = pred_len, level = c(50,95))
+
+  autoplot(fc_views) +
+
+    geom_line(aes(rowname/7, views), data = post_views, color = "grey40") +
+
+    labs(x = "Time [weeks]", y = "views vs auto.arima predictions")
+
+}
+```
+
+```{r}
+ pageviews1 <- extract_ts(rownr) %>%
+
+    rownames_to_column() %>%
+
+    mutate(rowname = as.integer(rowname))
+
+  pred_len1 <- 45
+
+  pred_range1 <- c(nrow(pageviews1)-pred_len1+1, nrow(pageviews1))
+
+  pre_views1 <- pageviews1 %>% head(nrow(pageviews1)-pred_len1)
+
+  post_views1 <- pageviews1 %>% tail(pred_len1)
+  
+  arima.fit1 <- auto.arima(tsclean(ts(pre_views1$views, frequency = 7)),
+
+                          d = 1, D = 1, stepwise = FALSE, approximation = FALSE)
+
+  fc_views1 <- arima.fit1 %>% forecast(h = pred_len1, level = c(50,95))
+
+  autoplot(fc_views1) +
+
+    geom_line(aes(rowname/7, views), data = post_views1, color = "grey40") +
+
+    labs(x = "Weeks", y = "views vs predictions")
+```
+```{r}
+checkresiduals(fc_views1)
+```
+```{r}
+autoplot(forecast(fc_views1)) +
+  labs(x = "Time in Weeks", y = "views vs predictions")
+```
+```{r}
+checkresiduals(fc_views1)
+```
+
+
+```{r}
+p1 <- plot_auto_arima_rownr(91728)
+
+p2 <- plot_auto_arima_rownr(55587)
+
+p3 <- plot_auto_arima_rownr(108341)
+
+p4 <- plot_auto_arima_rownr(70772)
+
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+
+```{r}
+rownr <- 139120
+
+pageviews <- extract_ts(rownr) %>%
+  rename(y = views,
+         ds = dates)
+
+pred_len <- 45
+pred_range <- c(nrow(pageviews)-pred_len+1, nrow(pageviews))
+pre_views <- pageviews %>% head(nrow(pageviews)-pred_len)
+post_views <- pageviews %>% tail(pred_len)
+
+proph <- prophet(pre_views, changepoint.prior.scale=0.5, yearly.seasonality=TRUE, daily.seasonality = FALSE)
+future <- make_future_dataframe(proph, periods = pred_len)
+fcast <- predict(proph, future)
+
+plot(proph, fcast)
+```
+```{r}
+prophet_plot_components(proph, fcast)
+```
+```{r}
+df_cv = cross_validation(proph, units = days(x = 730), horizon = days(x =365))
+performance_metrics(df_cv)
+```
+
+```{r}
+fcast %>%
+  as.tibble() %>%
+  mutate(ds = date(ds)) %>%
+  ggplot(aes(ds, yhat)) + 
+  geom_ribbon(aes(x = ds, ymin = yhat_lower, ymax = yhat_upper), fill = "light blue") +
+  geom_line(colour = "blue") +
+  geom_line(data = pre_views, aes(ds, y), colour = "black") +
+  geom_line(data = post_views, aes(ds, y), colour = "grey50")
+```
+```{r}
+plot_prophet_rownr_season <- function(rownr, season){
+  art <- tpages %>% filter(rowname == rownr) %>% .$article
+  loc <- tpages %>% filter(rowname == rownr) %>% .$locale
+  acc <- tpages %>% filter(rowname == rownr) %>% .$access
+
+  
+  pageviews <- extract_ts(rownr) %>%
+    rename(y = views,
+         ds = dates)
+
+  pred_len <- 60
+  pred_range <- c(nrow(pageviews)-pred_len+1, nrow(pageviews))
+  pre_views <- pageviews %>% head(nrow(pageviews)-pred_len)
+  post_views <- pageviews %>% tail(pred_len)
+
+
+  proph <- prophet(pre_views, changepoint.prior.scale=0.5, yearly.seasonality=season, daily.seasonality = FALSE)
+  future <- make_future_dataframe(proph, periods = pred_len)
+  fcast <- predict(proph, future)
+
+  p <- fcast %>%
+    as.tibble() %>%
+    mutate(ds = date(ds)) %>%
+    ggplot(aes(ds, yhat)) +
+    geom_ribbon(aes(x = ds, ymin = yhat_lower, ymax = yhat_upper), fill = "light blue") +
+    geom_line(colour = "blue") +
+    geom_line(data = pre_views, aes(ds, y), colour = "black") +
+    geom_line(data = post_views, aes(ds, y), colour = "grey50") +
+    labs(title = str_c("Prophet for ", art, "-", loc, "-", acc))
+
+  return(p)
+}  
+```
+
+```{r}
+p1 <- plot_prophet_rownr_season(70772, FALSE)
+p2 <- plot_prophet_rownr_season(108341, TRUE)
+p3 <- plot_prophet_rownr_season(95856, TRUE)
+p4 <- plot_prophet_rownr_season(139120, TRUE)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=TRUE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
+```{r}
+p1 <- plot_prophet_rownr_season(72480, FALSE)
+p2 <- plot_prophet_rownr_season(72480, TRUE)
+p3 <- plot_prophet_rownr_season(139120, FALSE)
+p4 <- plot_prophet_rownr_season(139120, TRUE)
+
+layout <- matrix(c(1,2,3,4),2,2,byrow=FALSE)
+multiplot(p1, p2, p3, p4, layout=layout)
+```
